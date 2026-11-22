@@ -19,11 +19,11 @@ class UserObserver
   {
     // With $afterCommit = true, isDirty() is always false after commit.
     // Use wasChanged() to detect what was actually modified.
-    $syncFields = ['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd', 'plan_id'];
+    $syncFields = ['group_id', 'uuid', 'speed_limit', 'device_limit', 'banned', 'expired_at', 'transfer_enable', 'u', 'd'];
     $needsSync = $user->wasChanged($syncFields);
     $oldGroupId = $user->wasChanged('group_id') ? $user->getOriginal('group_id') : null;
 
-    if ($user->wasChanged(['plan_id', 'expired_at'])) {
+    if ($user->wasChanged('expired_at')) {
       $this->recalculateNextResetAt($user);
     }
 

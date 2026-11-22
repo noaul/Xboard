@@ -4,11 +4,9 @@ namespace Tests\Unit\Services\Auth;
 
 use App\Models\User;
 use App\Services\Auth\LoginService;
-use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Validator;
 use Tests\TestCase;
 
 class LoginServiceTest extends TestCase
@@ -25,70 +23,63 @@ class LoginServiceTest extends TestCase
         $this->service = app(LoginService::class);
     }
 
-    public function test_reset_password_rejects_missing_cached_email_code(): void
+    public function test_admin_can_login(): void
     {
-        $user = $this->createUser('victim@example.com', 'old-password');
+        $admin = $this->createUser('admin@example.com', 'password123', isAdmin: true);
 
-        [$success, $result] = $this->service->resetPassword($user->email, '', 'new-password');
+        [$success, $result] = $this->service->login('admin@example.com', 'password123');
+
+        $this->assertTrue($success);
+        $this->assertSame($admin->id, $result->id);
+    }
+
+    public function test_regular_user_cannot_login(): void
+    {
+        $this->createUser('user@example.com', 'password123');
+
+        [$success, $result] = $this->service->login('user@example.com', 'password123');
+
+        $this->assertFalse($success);
+        $this->assertSame(403, $result[0]);
+    }
+
+    public function test_wrong_password_is_rejected(): void
+    {
+        $this->createUser('admin@example.com', 'password123', isAdmin: true);
+
+        [$success, $result] = $this->service->login('admin@example.com', 'wrong-password');
 
         $this->assertFalse($success);
         $this->assertSame(400, $result[0]);
-
-        $user->refresh();
-        $this->assertTrue(password_verify('old-password', $user->password));
     }
 
-    public function test_reset_password_accepts_matching_cached_email_code(): void
+    public function test_unknown_email_is_rejected_with_same_error_as_wrong_password(): void
     {
-        $user = $this->createUser('user@example.com', 'old-password');
-        Cache::put(CacheKey::get('EMAIL_VERIFY_CODE', $user->email), 123456, 300);
+        [$success, $result] = $this->service->login('nobody@example.com', 'password123');
 
-        [$success, $result] = $this->service->resetPassword($user->email, '123456', 'new-password');
-
-        $this->assertTrue($success);
-        $this->assertTrue($result);
-
-        $user->refresh();
-        $this->assertTrue(password_verify('new-password', $user->password));
-        $this->assertNull(Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $user->email)));
+        $this->assertFalse($success);
+        $this->assertSame(400, $result[0]);
     }
 
-    public function test_reset_password_uses_canonical_email_for_verification_code(): void
+    public function test_banned_admin_cannot_login(): void
     {
-        $user = $this->createUser('José@example.com', 'old-password');
-        $email = "JOSE\u{0301}@EXAMPLE.COM";
-        Cache::put(CacheKey::get('EMAIL_VERIFY_CODE', User::normalizeEmail($email)), 123456, 300);
+        $this->createUser('admin@example.com', 'password123', isAdmin: true, banned: true);
 
-        [$success, $result] = $this->service->resetPassword($email, '123456', 'new-password');
+        [$success, $result] = $this->service->login('admin@example.com', 'password123');
 
-        $this->assertTrue($success);
-        $this->assertTrue($result);
-        $this->assertTrue(password_verify('new-password', $user->fresh()->password));
+        $this->assertFalse($success);
+        $this->assertSame(400, $result[0]);
     }
 
-    public function test_forget_password_validation_rejects_boolean_email_code(): void
-    {
-        $validator = Validator::make([
-            'email' => 'victim@example.com',
-            'password' => 'new-password',
-            'email_code' => false,
-        ], [
-            'email' => 'required|email:strict',
-            'password' => 'required|min:8',
-            'email_code' => 'required|digits:6',
-        ]);
-
-        $this->assertTrue($validator->fails());
-        $this->assertArrayHasKey('email_code', $validator->errors()->toArray());
-    }
-
-    private function createUser(string $email, string $password): User
+    private function createUser(string $email, string $password, bool $isAdmin = false, bool $banned = false): User
     {
         return User::query()->create([
             'email' => $email,
             'password' => password_hash($password, PASSWORD_DEFAULT),
             'uuid' => Helper::guid(true),
-            'token' => Helper::guid(true),
+            'token' => Helper::guid(),
+            'is_admin' => $isAdmin,
+            'banned' => $banned,
             'created_at' => time(),
             'updated_at' => time(),
         ]);

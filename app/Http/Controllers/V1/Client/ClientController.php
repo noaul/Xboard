@@ -208,7 +208,7 @@ class ClientController extends Controller
         $userService = new UserService();
         $resetDay = $userService->getResetDay($user);
         array_unshift($servers, array_merge($servers[0], [
-            'name' => "套餐到期：{$expiredDate}",
+            'name' => "到期时间：{$expiredDate}",
         ]));
         if ($resetDay) {
             array_unshift($servers, array_merge($servers[0], [

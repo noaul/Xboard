@@ -5,8 +5,6 @@ namespace App\Services;
 use App\Jobs\StatServerJob;
 use App\Jobs\StatUserJob;
 use App\Jobs\TrafficFetchJob;
-use App\Models\Order;
-use App\Models\Plan;
 use App\Models\Server;
 use App\Models\User;
 use App\Services\Plugin\HookManager;
@@ -53,67 +51,6 @@ class UserService
         return false;
     }
 
-    public function getAvailableUsers()
-    {
-        return User::whereRaw('u + d < transfer_enable')
-            ->where(function ($query) {
-                $query->where('expired_at', '>=', time())
-                    ->orWhere('expired_at', NULL);
-            })
-            ->where('banned', 0)
-            ->get();
-    }
-
-    public function getUnAvailbaleUsers()
-    {
-        return User::where(function ($query) {
-            $query->where('expired_at', '<', time())
-                ->orWhere('expired_at', 0);
-        })
-            ->where(function ($query) {
-                $query->where('plan_id', NULL)
-                    ->orWhere('transfer_enable', 0);
-            })
-            ->get();
-    }
-
-    public function getUsersByIds($ids)
-    {
-        return User::whereIn('id', $ids)->get();
-    }
-
-    public function getAllUsers()
-    {
-        return User::all();
-    }
-
-    public function addBalance(int $userId, int $balance): bool
-    {
-        $user = User::lockForUpdate()->find($userId);
-        if (!$user) {
-            return false;
-        }
-        $user->balance = $user->balance + $balance;
-        if ($user->balance < 0) {
-            return false;
-        }
-        if (!$user->save()) {
-            return false;
-        }
-        return true;
-    }
-
-    public function isNotCompleteOrderByUserId(int $userId): bool
-    {
-        $order = Order::whereIn('status', [0, 1])
-            ->where('user_id', $userId)
-            ->first();
-        if (!$order) {
-            return false;
-        }
-        return true;
-    }
-
     public function trafficFetch(Server $server, string $protocol, array $data)
     {
         $server->rate = $server->getCurrentRate();
@@ -156,131 +93,36 @@ class UserService
     }
 
     /**
-     * 创建用户
+     * 创建用户（由管理员手动创建）
+     *
+     * 支持字段：email, password, group_id, transfer_enable(字节), expired_at,
+     * speed_limit, device_limit, remarks, is_admin
      */
     public function createUser(array $data): User
     {
         $user = new User();
-
-        // 基本信息
         $user->email = $data['email'];
         $user->password = Hash::make($data['password'] ?? $user->email);
         $user->uuid = Helper::guid(true);
         $user->token = Helper::guid();
-
-        // 默认设置
-        $user->remind_expire = admin_setting('default_remind_expire', 1);
-        $user->remind_traffic = admin_setting('default_remind_traffic', 1);
         $user->expired_at = null;
+        $user->transfer_enable = 0;
 
-        // 可选字段
-        $this->setOptionalFields($user, $data);
-
-        // 处理计划
-        if (isset($data['plan_id'])) {
-            $this->setPlanForUser($user, $data['plan_id'], $data['expired_at'] ?? null);
-        } else {
-            $this->setTryOutPlan(user: $user);
-        }
-
-        return $user;
-    }
-
-    /**
-     * 设置可选字段
-     */
-    private function setOptionalFields(User $user, array $data): void
-    {
         $optionalFields = [
-            'invite_user_id',
-            'telegram_id',
             'group_id',
-            'speed_limit',
+            'transfer_enable',
             'expired_at',
-            'transfer_enable'
+            'speed_limit',
+            'device_limit',
+            'remarks',
+            'is_admin',
         ];
-
         foreach ($optionalFields as $field) {
             if (array_key_exists($field, $data)) {
                 $user->{$field} = $data[$field];
             }
         }
-    }
-
-    /**
-     * 为用户设置计划
-     */
-    private function setPlanForUser(User $user, int $planId, ?int $expiredAt = null): void
-    {
-        $plan = Plan::find($planId);
-        if (!$plan)
-            return;
-
-        $user->plan_id = $plan->id;
-        $user->group_id = $plan->group_id;
-        $user->transfer_enable = $plan->transfer_enable * 1073741824;
-        $user->speed_limit = $plan->speed_limit;
-
-        if ($expiredAt) {
-            $user->expired_at = $expiredAt;
-        }
-    }
-
-    /**
-     * 为用户分配一个新套餐或续费现有套餐
-     *
-     * @param User $user 用户模型
-     * @param Plan $plan 套餐模型
-     * @param int $validityDays 购买天数
-     * @return User 更新后的用户模型
-     */
-    public function assignPlan(User $user, Plan $plan, int $validityDays): User
-    {
-        $user->plan_id = $plan->id;
-        $user->group_id = $plan->group_id;
-        $user->transfer_enable = $plan->transfer_enable * 1073741824;
-        $user->speed_limit = $plan->speed_limit;
-        $user->device_limit = $plan->device_limit;
-
-        if ($validityDays > 0) {
-            $user = $this->extendSubscription($user, $validityDays);
-        }
-
-        $user->save();
-        return $user;
-    }
-
-    /**
-     * 延长用户的订阅有效期
-     *
-     * @param User $user 用户模型
-     * @param int $days 延长天数
-     * @return User 更新后的用户模型
-     */
-    public function extendSubscription(User $user, int $days): User
-    {
-        $currentExpired = $user->expired_at ?? time();
-        $user->expired_at = max($currentExpired, time()) + ($days * 86400);
 
         return $user;
-    }
-
-    /**
-     * 设置试用计划
-     */
-    private function setTryOutPlan(User $user): void
-    {
-        if (!(int) admin_setting('try_out_plan_id', 0))
-            return;
-
-        $plan = Plan::find(admin_setting('try_out_plan_id'));
-        if (!$plan)
-            return;
-
-        $user->transfer_enable = $plan->transfer_enable * 1073741824;
-        $user->plan_id = $plan->id;
-        $user->group_id = $plan->group_id;
-        $user->expired_at = time() + (admin_setting('try_out_hour', 1) * 3600);
-        $user->speed_limit = $plan->speed_limit;
     }
 }

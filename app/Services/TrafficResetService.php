@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Models\User;
-use App\Models\Plan;
 use App\Models\TrafficResetLog;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +15,24 @@ use App\Services\Plugin\HookManager;
  */
 class TrafficResetService
 {
+  /**
+   * 全局流量重置方式（系统设置 reset_traffic_method）
+   */
+  public const RESET_TRAFFIC_FIRST_DAY_MONTH = 0;  // 每月1号
+  public const RESET_TRAFFIC_MONTHLY = 1;          // 按月重置（以到期日为重置日）
+  public const RESET_TRAFFIC_NEVER = 2;            // 不重置
+  public const RESET_TRAFFIC_FIRST_DAY_YEAR = 3;   // 每年1月1日
+  public const RESET_TRAFFIC_YEARLY = 4;           // 按年重置（以到期日为重置日）
+  public const DEFAULT_RESET_METHOD = self::RESET_TRAFFIC_MONTHLY;
+
+  /**
+   * 获取系统设置的流量重置方式
+   */
+  public static function getResetMethod(): int
+  {
+    return (int) admin_setting('reset_traffic_method', self::DEFAULT_RESET_METHOD);
+  }
+
   /**
    * Check if a user's traffic should be reset and perform the reset.
    */
@@ -50,7 +67,7 @@ class TrafficResetService
         ]);
 
         $this->recordResetLog($user, [
-          'reset_type' => $this->getResetTypeFromPlan($user->plan),
+          'reset_type' => $this->getResetType(),
           'trigger_source' => $triggerSource,
           'old_upload' => $oldUpload,
           'old_download' => $oldDownload,
@@ -81,29 +98,27 @@ class TrafficResetService
    */
   public function calculateNextResetTime(User $user): ?Carbon
   {
-    if (
-      !$user->plan
-      || $user->plan->reset_traffic_method === Plan::RESET_TRAFFIC_NEVER
-      || ($user->plan->reset_traffic_method === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM
-        && (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY) === Plan::RESET_TRAFFIC_NEVER)
-      || $user->expired_at === NULL
-    ) {
+    $resetMethod = self::getResetMethod();
+    if ($resetMethod === self::RESET_TRAFFIC_NEVER) {
       return null;
-    }
-
-    $resetMethod = $user->plan->reset_traffic_method;
-
-    if ($resetMethod === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM) {
-      $resetMethod = (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY);
     }
 
     $now = Carbon::now(config('app.timezone'));
 
+    // 无到期时间的用户：按月/按年分别回退到每月1号/每年1月1日
+    if ($user->expired_at === null || (int) $user->expired_at <= 0) {
+      return match ($resetMethod) {
+        self::RESET_TRAFFIC_FIRST_DAY_MONTH, self::RESET_TRAFFIC_MONTHLY => $this->getNextMonthFirstDay($now),
+        self::RESET_TRAFFIC_FIRST_DAY_YEAR, self::RESET_TRAFFIC_YEARLY => $this->getNextYearFirstDay($now),
+        default => null,
+      };
+    }
+
     return match ($resetMethod) {
-      Plan::RESET_TRAFFIC_FIRST_DAY_MONTH => $this->getNextMonthFirstDay($now),
-      Plan::RESET_TRAFFIC_MONTHLY => $this->getNextMonthlyReset($user, $now),
-      Plan::RESET_TRAFFIC_FIRST_DAY_YEAR => $this->getNextYearFirstDay($now),
-      Plan::RESET_TRAFFIC_YEARLY => $this->getNextYearlyReset($user, $now),
+      self::RESET_TRAFFIC_FIRST_DAY_MONTH => $this->getNextMonthFirstDay($now),
+      self::RESET_TRAFFIC_MONTHLY => $this->getNextMonthlyReset($user, $now),
+      self::RESET_TRAFFIC_FIRST_DAY_YEAR => $this->getNextYearFirstDay($now),
+      self::RESET_TRAFFIC_YEARLY => $this->getNextYearlyReset($user, $now),
       default => null,
     };
   }
@@ -212,26 +227,15 @@ class TrafficResetService
   }
 
   /**
-   * Get the reset type from the user's plan.
+   * Get the reset type from the global reset method.
    */
-  private function getResetTypeFromPlan(?Plan $plan): string
+  private function getResetType(): string
   {
-    if (!$plan) {
-      return TrafficResetLog::TYPE_MANUAL;
-    }
-
-    $resetMethod = $plan->reset_traffic_method;
-
-    if ($resetMethod === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM) {
-      $resetMethod = (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY);
-    }
-
-    return match ($resetMethod) {
-      Plan::RESET_TRAFFIC_FIRST_DAY_MONTH => TrafficResetLog::TYPE_FIRST_DAY_MONTH,
-      Plan::RESET_TRAFFIC_MONTHLY => TrafficResetLog::TYPE_MONTHLY,
-      Plan::RESET_TRAFFIC_FIRST_DAY_YEAR => TrafficResetLog::TYPE_FIRST_DAY_YEAR,
-      Plan::RESET_TRAFFIC_YEARLY => TrafficResetLog::TYPE_YEARLY,
-      Plan::RESET_TRAFFIC_NEVER => TrafficResetLog::TYPE_MANUAL,
+    return match (self::getResetMethod()) {
+      self::RESET_TRAFFIC_FIRST_DAY_MONTH => TrafficResetLog::TYPE_FIRST_DAY_MONTH,
+      self::RESET_TRAFFIC_MONTHLY => TrafficResetLog::TYPE_MONTHLY,
+      self::RESET_TRAFFIC_FIRST_DAY_YEAR => TrafficResetLog::TYPE_FIRST_DAY_YEAR,
+      self::RESET_TRAFFIC_YEARLY => TrafficResetLog::TYPE_YEARLY,
       default => TrafficResetLog::TYPE_MANUAL,
     };
   }
@@ -274,7 +278,6 @@ class TrafficResetService
               ->orWhereNull('expired_at');
           })
           ->where('banned', 0)
-          ->whereNotNull('plan_id')
           ->orderBy('id')
           ->limit($batchSize)
           ->get();
@@ -383,6 +386,24 @@ class TrafficResetService
   }
 
   /**
+   * Recalculate next_reset_at for all users (e.g. after the global reset method changed).
+   */
+  public function recalculateAllNextResetTimes(): int
+  {
+    $count = 0;
+    User::query()->select(['id', 'expired_at', 'next_reset_at'])->chunkById(500, function ($users) use (&$count) {
+      foreach ($users as $user) {
+        $next = $this->calculateNextResetTime($user)?->timestamp;
+        if ($user->next_reset_at !== $next) {
+          User::whereKey($user->id)->update(['next_reset_at' => $next]);
+          $count++;
+        }
+      }
+    });
+    return $count;
+  }
+
+  /**
    * Get the user's traffic reset history.
    */
   public function getUserResetHistory(User $user, int $limit = 10): \Illuminate\Database\Eloquent\Collection
@@ -398,7 +419,7 @@ class TrafficResetService
    */
   public function canReset(User $user): bool
   {
-    return $user->isActive() && $user->plan !== null;
+    return $user->isActive();
   }
 
   /**

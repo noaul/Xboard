@@ -9,6 +9,32 @@
 
 </div>
 
+## ✂️ 精简版说明（本分支）
+
+本仓库是 Xboard 的精简版本，只保留「管理员手动开户 + 下发订阅」所需的功能：
+
+**保留**
+
+- 管理后台（全新的轻量页面，无需构建）：管理员登录、用户管理（手动创建 / 批量生成 / 编辑 / 封禁 / 删除 / 重置流量 / 重置订阅 / 导出 CSV / **复制订阅链接**）
+- 节点、权限组、路由规则管理，节点后端对接 API（UniProxy / V2 / WebSocket / 机器）
+- 订阅地址 `/{subscribe_path}/{token}`、各客户端订阅格式与订阅模板
+- 流量统计与按系统设置自动重置流量
+
+**移除**
+
+- 用户前台面板（主题）、用户注册 / 登录 / 找回密码 / 邮件登录、用户端全部 API
+- 套餐、订单、支付（含全部支付插件）、优惠券、礼品卡、邀请与佣金
+- 工单、知识库、公告、邮件发送与邮件模板、Telegram 机器人、客户端 App 配置接口
+- 原 React 管理后台子模块（`public/assets/admin` 现为本仓库自带的轻量后台）
+
+**使用要点**
+
+- 只有 `is_admin` 用户能登录（`/api/v2/passport/auth/login`），普通用户只通过订阅链接使用服务。
+- 用户可用节点由其「权限组」决定；流量、到期时间、限速、设备数直接在用户上设置，不再依赖套餐。
+- 流量重置方式为全局设置（系统设置 → 订阅 → 流量重置方式），无到期时间的用户按月 / 按年分别在每月 1 号 / 每年 1 月 1 日重置。
+- 数据库表结构未删除（旧数据保留，升级可直接执行 `php artisan xboard:update`），只是相关功能代码已移除。
+- 官方镜像 `ghcr.io/cedar2025/xboard` 不包含这些改动，请使用本仓库的 `Dockerfile` 自行构建镜像（默认从 `https://github.com/noaul/Xboard` 的 `master` 分支拉取代码，可通过 `--build-arg REPO_URL=... --build-arg BRANCH_NAME=...` 修改），并把 compose 文件中的 `image` 改为自建镜像。
+
 ## 📖 Introduction
 
 Xboard is a modern panel system built on Laravel 11, focusing on providing a clean and efficient user experience.

@@ -3,11 +3,9 @@
 namespace App\Http\Controllers\V2\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Admin\UserCreate;
 use App\Http\Requests\Admin\UserGenerate;
-use App\Http\Requests\Admin\UserSendMail;
 use App\Http\Requests\Admin\UserUpdate;
-use App\Jobs\SendEmailJob;
-use App\Models\Plan;
 use App\Models\User;
 use App\Services\AuthService;
 use App\Services\NodeSyncService;
@@ -198,7 +196,7 @@ class UserController extends Controller
         $pageSize = $request->input('pageSize', 10);
 
         $userModel = User::query()
-            ->with(['plan:id,name', 'invite_user:id,email', 'group:id,name'])
+            ->with(['group:id,name'])
             ->select((new User())->getTable() . '.*')
             ->selectRaw('(u + d) as total_used');
 
@@ -221,8 +219,6 @@ class UserController extends Controller
     {
         $model = $user;
         $user = $user->toArray();
-        $user['balance'] = $user['balance'] / 100;
-        $user['commission_balance'] = $user['commission_balance'] / 100;
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
         return HookManager::filter('admin.user.transform', $user, $model);
     }
@@ -234,27 +230,12 @@ class UserController extends Controller
         ], [
             'id.required' => '用户ID不能为空'
         ]);
-        $user = User::find($request->input('id'))->load('invite_user');
+        $user = User::with('group:id,name')->find($request->input('id'));
+        if (!$user) {
+            return $this->fail([400202, '用户不存在']);
+        }
         $user = HookManager::filter('admin.user.detail', $user, $request);
         return $this->success($user);
-    }
-
-    public function setInviteUser(Request $request)
-    {
-        $data = $request->validate([
-            'id' => 'required|integer|exists:App\\Models\\User,id',
-            'invite_user_id' => 'nullable|integer|different:id|exists:App\\Models\\User,id',
-        ]);
-        $parent = $data['invite_user_id'] ?? null;
-        $visited = [(int) $data['id']];
-        for ($cursor = $parent; $cursor; $cursor = User::find($cursor)?->invite_user_id) {
-            if (in_array((int) $cursor, $visited, true)) {
-                return $this->fail([422, '邀请关系不能形成循环']);
-            }
-            $visited[] = (int) $cursor;
-        }
-        User::findOrFail($data['id'])->update(['invite_user_id' => $parent]);
-        return $this->success(true);
     }
 
     public function update(UserUpdate $request)
@@ -271,6 +252,15 @@ class UserController extends Controller
                 return $this->fail([400201, '邮箱已被使用']);
             }
         }
+        // 防止管理员取消自己的管理员权限或封禁自己导致无法登录后台
+        if ($request->user() && $request->user()->id === $user->id) {
+            if (array_key_exists('is_admin', $params) && !$params['is_admin']) {
+                return $this->fail([400, '不能取消自己的管理员权限']);
+            }
+            if (!empty($params['banned'])) {
+                return $this->fail([400, '不能封禁自己']);
+            }
+        }
         // 处理密码
         if (isset($params['password'])) {
             $params['password'] = password_hash($params['password'], PASSWORD_DEFAULT);
@@ -278,30 +268,9 @@ class UserController extends Controller
         } else {
             unset($params['password']);
         }
-        // 处理订阅计划
-        if (isset($params['plan_id'])) {
-            $plan = Plan::find($params['plan_id']);
-            if (!$plan) {
-                return $this->fail([400202, '订阅计划不存在']);
-            }
-            $params['group_id'] = $plan->group_id;
-        }
-        // 处理邀请用户
-        if ($request->input('invite_user_email') && $inviteUser = User::byEmail($request->input('invite_user_email'))->first()) {
-            $params['invite_user_id'] = $inviteUser->id;
-        } else {
-            $params['invite_user_id'] = null;
-        }
-
         if (isset($params['banned']) && (int) $params['banned'] === 1) {
             $authService = new AuthService($user);
             $authService->removeAllSessions();
-        }
-        if (isset($params['balance'])) {
-            $params['balance'] = $params['balance'] * 100;
-        }
-        if (isset($params['commission_balance'])) {
-            $params['commission_balance'] = $params['commission_balance'] * 100;
         }
 
         $params = HookManager::filter('admin.user.update.params', $params, $request, $user);
@@ -344,20 +313,18 @@ class UserController extends Controller
             }
         }
 
-        // 优化查询：使用with预加载plan关系，避免N+1问题
         $query = User::query()
-            ->with('plan:id,name')
+            ->with('group:id,name')
             ->orderBy('id', 'asc')
             ->select([
+                'id',
                 'email',
-                'balance',
-                'commission_balance',
                 'transfer_enable',
                 'u',
                 'd',
                 'expired_at',
                 'token',
-                'plan_id'
+                'group_id'
             ]);
 
         if ($scope === 'selected') {
@@ -378,12 +345,10 @@ class UserController extends Controller
             // 写入CSV头部
             fputcsv($output, [
                 '邮箱',
-                '余额',
-                '推广佣金',
                 '总流量',
                 '剩余流量',
-                '套餐到期时间',
-                '订阅计划',
+                '到期时间',
+                '权限组',
                 '订阅地址'
             ]);
 
@@ -393,12 +358,10 @@ class UserController extends Controller
                     try {
                         $row = [
                             $user->email,
-                            number_format($user->balance / 100, 2),
-                            number_format($user->commission_balance / 100, 2),
                             Helper::trafficConvert($user->transfer_enable),
-                            Helper::trafficConvert($user->transfer_enable - ($user->u + $user->d)),
+                            Helper::trafficConvert(max(0, $user->transfer_enable - ($user->u + $user->d))),
                             $user->expired_at ? date('Y-m-d H:i:s', $user->expired_at) : '长期有效',
-                            $user->plan ? $user->plan->name : '无订阅',
+                            $user->group ? $user->group->name : '',
                             Helper::getSubscribeUrl($user->token)
                         ];
                         fputcsv($output, $row);
@@ -422,6 +385,50 @@ class UserController extends Controller
         ]);
     }
 
+    /**
+     * 手动创建单个用户
+     */
+    public function create(UserCreate $request)
+    {
+        $email = User::normalizeEmail($request->input('email'));
+        if (User::byEmail($email)->exists()) {
+            return $this->fail([400201, '邮箱已存在于系统中']);
+        }
+
+        $user = app(UserService::class)->createUser([
+            'email' => $email,
+            'password' => $request->input('password') ?: $email,
+            ...$this->userAttributesFromRequest($request),
+            'remarks' => $request->input('remarks'),
+            'is_admin' => (bool) $request->input('is_admin', false),
+        ]);
+
+        if (!$user->save()) {
+            return $this->fail([500, '创建失败']);
+        }
+
+        HookManager::call('admin.user.create.after', [
+            'user' => $user,
+            'request' => $request,
+        ]);
+
+        return $this->success(self::transformUserData($user->refresh()->load('group:id,name')));
+    }
+
+    /**
+     * 从请求中提取创建用户时可设置的属性
+     */
+    private function userAttributesFromRequest(Request $request): array
+    {
+        $attributes = [];
+        foreach (['group_id', 'transfer_enable', 'expired_at', 'speed_limit', 'device_limit'] as $field) {
+            if ($request->filled($field)) {
+                $attributes[$field] = (int) $request->input($field);
+            }
+        }
+        return $attributes;
+    }
+
     public function generate(UserGenerate $request)
     {
         if ($request->input('email_prefix')) {
@@ -441,8 +448,7 @@ class UserController extends Controller
             $user = $userService->createUser([
                 'email' => $email,
                 'password' => $request->input('password') ?? $email,
-                'plan_id' => $request->input('plan_id'),
-                'expired_at' => $request->input('expired_at'),
+                ...$this->userAttributesFromRequest($request),
             ]);
 
             if (!$user->save()) {
@@ -466,8 +472,7 @@ class UserController extends Controller
             $usersData[] = [
                 'email' => $email,
                 'password' => $request->input('password') ?? $email,
-                'plan_id' => $request->input('plan_id'),
-                'expired_at' => $request->input('expired_at'),
+                ...$this->userAttributesFromRequest($request),
             ];
         }
 
@@ -549,8 +554,7 @@ class UserController extends Controller
             $usersData[] = [
                 'email' => $email,
                 'password' => $request->input('password') ?? $email,
-                'plan_id' => $request->input('plan_id'),
-                'expired_at' => $request->input('expired_at'),
+                ...$this->userAttributesFromRequest($request),
             ];
         }
 
@@ -608,77 +612,6 @@ class UserController extends Controller
         ]);
     }
 
-    public function sendMail(UserSendMail $request)
-    {
-        ini_set('memory_limit', '-1');
-        $scopeInfo = $this->resolveScope($request);
-        $scope = $scopeInfo['scope'];
-        $userIds = $scopeInfo['user_ids'];
-
-        if ($scope === 'selected') {
-            if (empty($userIds)) {
-                return $this->fail([422, 'user_ids不能为空']);
-            }
-        }
-
-        $sortType = in_array($request->input('sort_type'), ['ASC', 'DESC']) ? $request->input('sort_type') : 'DESC';
-        $sort = $request->input('sort') ? $request->input('sort') : 'created_at';
-
-        $builder = User::query()
-            ->with('plan:id,name')
-            ->orderBy('id', 'desc');
-
-        if ($scope === 'filtered') {
-            // filtered: apply filters/sort
-            $builder->orderBy($sort, $sortType);
-            $this->applyFiltersAndSorts($request, $builder);
-        } elseif ($scope === 'selected') {
-            $builder->whereIn('id', $userIds);
-        } // all: ignore filter/sort
-
-        $subject = $request->input('subject');
-        $content = $request->input('content');
-        $appName = admin_setting('app_name', 'XBoard');
-        $appUrl = admin_setting('app_url');
-
-        $chunkSize = 1000;
-
-        $builder->chunk($chunkSize, function ($users) use ($subject, $content, $appName, $appUrl) {
-            foreach ($users as $user) {
-                $vars = [
-                    'app.name' => $appName,
-                    'app.url' => $appUrl,
-                    'now' => now()->format('Y-m-d H:i:s'),
-                    'user.id' => $user->id,
-                    'user.email' => $user->email,
-                    'user.uuid' => $user->uuid,
-                    'user.plan_name' => $user->plan?->name ?? '',
-                    'user.expired_at' => $user->expired_at ? date('Y-m-d H:i:s', $user->expired_at) : '',
-                    'user.transfer_enable' => (int) ($user->transfer_enable ?? 0),
-                    'user.transfer_used' => (int) (($user->u ?? 0) + ($user->d ?? 0)),
-                    'user.transfer_left' => (int) (($user->transfer_enable ?? 0) - (($user->u ?? 0) + ($user->d ?? 0))),
-                ];
-
-                $templateValue = [
-                    'name' => $appName,
-                    'url' => $appUrl,
-                    'content' => $content,
-                    'vars' => $vars,
-                    'content_mode' => 'text',
-                ];
-
-                dispatch(new SendEmailJob([
-                    'email' => $user->email,
-                    'subject' => $subject,
-                    'template_name' => 'notify',
-                    'template_value' => $templateValue
-                ], 'send_email_mass'));
-            }
-        });
-
-        return $this->success(true);
-    }
-
     public function ban(Request $request)
     {
         $scopeInfo = $this->resolveScope($request);
@@ -731,6 +664,9 @@ class UserController extends Controller
             'id.exists' => '用户不存在'
         ]);
         $user = User::find($request->input('id'));
+        if ($request->user() && $request->user()->id === $user->id) {
+            return $this->fail([400, '不能删除自己']);
+        }
         HookManager::call('admin.user.destroy.before', [
             'user' => $user,
             'request' => $request,
@@ -738,10 +674,8 @@ class UserController extends Controller
 
         try {
             DB::beginTransaction();
-            $user->orders()->delete();
-            $user->codes()->delete();
             $user->stat()->delete();
-            $user->tickets()->delete();
+            $user->trafficResetLogs()->delete();
             $user->delete();
             DB::commit();
 

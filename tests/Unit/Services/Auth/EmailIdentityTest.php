@@ -2,21 +2,16 @@
 
 namespace Tests\Unit\Services\Auth;
 
-use App\Http\Controllers\V1\Passport\CommController;
-use App\Http\Requests\Passport\AuthRegister;
+use App\Http\Requests\Admin\UserCreate;
 use App\Http\Requests\Admin\UserGenerate;
-use App\Http\Requests\Passport\CommSendEmailVerify;
 use App\Models\User;
 use App\Services\Auth\LoginService;
-use App\Services\Auth\MailLinkService;
 use App\Services\UserService;
-use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
@@ -59,7 +54,7 @@ class EmailIdentityTest extends TestCase
 
     public function test_form_request_normalizes_email_before_validation(): void
     {
-        $request = AuthRegister::create('/register', 'POST', [
+        $request = UserCreate::create('/admin/user/create', 'POST', [
             'email' => 'José@例子.中国',
             'password' => 'password123',
         ]);
@@ -98,7 +93,7 @@ class EmailIdentityTest extends TestCase
         $this->assertSame(64, mb_strlen($email, 'UTF-8'));
         $this->assertGreaterThan(64, mb_strlen(User::normalizeEmail($email), 'UTF-8'));
 
-        $request = AuthRegister::create('/register', 'POST', [
+        $request = UserCreate::create('/admin/user/create', 'POST', [
             'email' => $email,
             'password' => 'password123',
         ]);
@@ -110,13 +105,6 @@ class EmailIdentityTest extends TestCase
         } catch (ValidationException $exception) {
             $this->assertArrayHasKey('email', $exception->errors());
         }
-    }
-
-    public function test_email_whitelist_matches_unicode_and_punycode_domains(): void
-    {
-        $this->assertTrue(Helper::emailSuffixVerify('user@例子.中国', ['XN--FSQU00A.XN--FIQS8S']));
-        $this->assertTrue(Helper::emailSuffixVerify('user@xn--fsqu00a.xn--fiqs8s', ['例子.中国']));
-        $this->assertFalse(Helper::emailSuffixVerify('user@example.com', ['例子.中国']));
     }
 
     public function test_database_unique_index_distinguishes_different_email_identities(): void
@@ -150,7 +138,7 @@ class EmailIdentityTest extends TestCase
     public function test_login_accepts_equivalent_unicode_email_representation(): void
     {
         admin_setting('password_limit_enable', 0);
-        $user = $this->createUser('José@example.com', 'old-password');
+        $user = $this->createUser('José@example.com', 'old-password', true);
 
         [$success, $result] = app(LoginService::class)->login(
             "JOSE\u{0301}@EXAMPLE.COM",
@@ -159,44 +147,6 @@ class EmailIdentityTest extends TestCase
 
         $this->assertTrue($success);
         $this->assertSame($user->id, $result->id);
-    }
-
-    public function test_mail_link_rate_limit_uses_canonical_email_identity(): void
-    {
-        admin_setting(['login_with_mail_link_enable' => 1]);
-        Queue::fake();
-        $this->createUser('José@example.com');
-
-        $service = app(MailLinkService::class);
-        [$success] = $service->handleMailLink("JOSE\u{0301}@EXAMPLE.COM");
-        [$secondSuccess, $result] = $service->handleMailLink('josé@example.com');
-
-        $this->assertTrue($success);
-        $this->assertFalse($secondSuccess);
-        $this->assertSame(429, $result[0]);
-        $this->assertNotNull(Cache::get(CacheKey::get(
-            'LAST_SEND_LOGIN_WITH_MAIL_LINK_TIMESTAMP',
-            User::normalizeEmail('José@example.com')
-        )));
-    }
-
-    public function test_email_verification_uses_canonical_cache_identity(): void
-    {
-        admin_setting([
-            'captcha_enable' => 0,
-            'email_whitelist_enable' => 0,
-        ]);
-        Queue::fake();
-
-        $request = CommSendEmailVerify::create('/api/v1/passport/comm/sendEmailVerify', 'POST', [
-            'email' => "JOSE\u{0301}@EXAMPLE.COM",
-        ]);
-
-        app(CommController::class)->sendEmailVerify($request);
-
-        $identity = User::normalizeEmail('José@example.com');
-        $this->assertNotNull(Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $identity)));
-        $this->assertNotNull(Cache::get(CacheKey::get('LAST_SEND_EMAIL_VERIFY_TIMESTAMP', $identity)));
     }
 
     public function test_migration_normalizes_existing_email_values(): void
@@ -231,10 +181,11 @@ class EmailIdentityTest extends TestCase
         $migration->up();
     }
 
-    private function createUser(string $email, string $password = 'password123'): User
+    private function createUser(string $email, string $password = 'password123', bool $isAdmin = false): User
     {
         return User::query()->create([
             'email' => $email,
+            'is_admin' => $isAdmin,
             'password' => password_hash($password, PASSWORD_DEFAULT),
             'uuid' => Helper::guid(true),
             'token' => Helper::guid(true),
