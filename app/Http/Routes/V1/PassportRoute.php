@@ -11,7 +11,7 @@ class PassportRoute
         $router->group([
             'prefix' => 'passport'
         ], function ($router) {
-            // 仅保留管理员登录
+            // 用户前台已移除，仅保留管理员登录
             $router->post('/auth/login', [AuthController::class, 'login']);
         });
     }

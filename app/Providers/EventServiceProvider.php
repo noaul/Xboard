@@ -4,7 +4,9 @@ namespace App\Providers;
 
 use App\Models\Server;
 use App\Models\ServerRoute;
+use App\Models\Plan;
 use App\Models\User;
+use App\Observers\PlanObserver;
 use App\Observers\ServerObserver;
 use App\Observers\ServerRouteObserver;
 use App\Observers\UserObserver;
@@ -29,6 +31,7 @@ class EventServiceProvider extends ServiceProvider
         parent::boot();
 
         User::observe(UserObserver::class);
+        Plan::observe(PlanObserver::class);
         Server::observe(ServerObserver::class);
         ServerRoute::observe(ServerRouteObserver::class);
 

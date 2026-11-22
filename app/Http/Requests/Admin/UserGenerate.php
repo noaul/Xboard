@@ -18,10 +18,7 @@ class UserGenerate extends FormRequest
         return [
             'generate_count' => 'nullable|integer|max:500',
             'expired_at' => 'nullable|integer',
-            'group_id' => 'nullable|integer|exists:App\\Models\\ServerGroup,id',
-            'transfer_enable' => 'nullable|integer|min:0',
-            'speed_limit' => 'nullable|integer|min:0',
-            'device_limit' => 'nullable|integer|min:0',
+            'plan_id' => 'nullable|integer',
             'email_prefix' => 'nullable|string',
             'email_suffix' => 'required|string',
             'password' => 'nullable'
@@ -52,8 +49,7 @@ class UserGenerate extends FormRequest
     {
         return [
             'generate_count.integer' => '生成数量必须为数字',
-            'generate_count.max' => '生成数量最大为500个',
-            'group_id.exists' => '权限组不存在'
+            'generate_count.max' => '生成数量最大为500个'
         ];
     }
 }

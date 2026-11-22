@@ -24,18 +24,6 @@ class ManageController extends Controller
         return $this->success($servers);
     }
 
-    /**
-     * 各协议类型的默认 protocol_settings
-     */
-    public function protocolDefaults()
-    {
-        $defaults = [];
-        foreach (Server::VALID_TYPES as $type) {
-            $defaults[$type] = Server::defaultProtocolSettings($type);
-        }
-        return $this->success($defaults);
-    }
-
     public function sort(Request $request)
     {
         ini_set('post_max_size', '1m');

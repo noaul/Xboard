@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\ThemeService;
 use App\Services\UpdateService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -48,6 +49,8 @@ class XboardUpdate extends Command
         $this->info('默认插件检查完成');
         $updateService = new UpdateService();
         $updateService->updateVersionCache();
+        $themeService = app(ThemeService::class);
+        $themeService->refreshCurrentTheme();
         if (config('queue.default') === 'sync') {
             $this->info('horizon:terminate skipped (sync queue, no workers to terminate).');
         } else {

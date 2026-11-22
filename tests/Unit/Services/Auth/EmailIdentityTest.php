@@ -2,8 +2,8 @@
 
 namespace Tests\Unit\Services\Auth;
 
-use App\Http\Requests\Admin\UserCreate;
 use App\Http\Requests\Admin\UserGenerate;
+use App\Http\Requests\Admin\UserUpdate;
 use App\Models\User;
 use App\Services\Auth\LoginService;
 use App\Services\UserService;
@@ -54,9 +54,9 @@ class EmailIdentityTest extends TestCase
 
     public function test_form_request_normalizes_email_before_validation(): void
     {
-        $request = UserCreate::create('/admin/user/create', 'POST', [
+        $request = UserUpdate::create('/admin/user/update', 'POST', [
+            'id' => 1,
             'email' => 'José@例子.中国',
-            'password' => 'password123',
         ]);
         $request->setContainer(app())->setRedirector(app('redirect'));
         $request->validateResolved();
@@ -93,9 +93,9 @@ class EmailIdentityTest extends TestCase
         $this->assertSame(64, mb_strlen($email, 'UTF-8'));
         $this->assertGreaterThan(64, mb_strlen(User::normalizeEmail($email), 'UTF-8'));
 
-        $request = UserCreate::create('/admin/user/create', 'POST', [
+        $request = UserUpdate::create('/admin/user/update', 'POST', [
+            'id' => 1,
             'email' => $email,
-            'password' => 'password123',
         ]);
         $request->setContainer(app())->setRedirector(app('redirect'));
 
@@ -105,6 +105,13 @@ class EmailIdentityTest extends TestCase
         } catch (ValidationException $exception) {
             $this->assertArrayHasKey('email', $exception->errors());
         }
+    }
+
+    public function test_email_whitelist_matches_unicode_and_punycode_domains(): void
+    {
+        $this->assertTrue(Helper::emailSuffixVerify('user@例子.中国', ['XN--FSQU00A.XN--FIQS8S']));
+        $this->assertTrue(Helper::emailSuffixVerify('user@xn--fsqu00a.xn--fiqs8s', ['例子.中国']));
+        $this->assertFalse(Helper::emailSuffixVerify('user@example.com', ['例子.中国']));
     }
 
     public function test_database_unique_index_distinguishes_different_email_identities(): void

@@ -351,27 +351,6 @@ class Server extends Model
         return $result;
     }
 
-    /**
-     * 获取某协议类型的默认 protocol_settings（供管理面板新建节点时预填）
-     */
-    public static function defaultProtocolSettings(string $type): array
-    {
-        $server = new self();
-        $server->type = $type;
-        $configs = self::PROTOCOL_CONFIGURATIONS[$type] ?? [];
-        $settings = $server->castSettingsWithConfig([], $configs);
-
-        // 为必填字段提供可用的初始值
-        if (array_key_exists('network', $settings) && $settings['network'] === null) {
-            $settings['network'] = 'tcp';
-        }
-        if ($type === self::TYPE_SHADOWSOCKS && empty($settings['cipher'])) {
-            $settings['cipher'] = 'aes-128-gcm';
-        }
-
-        return $settings;
-    }
-
     public function getProtocolSettingsAttribute($value)
     {
         $settings = json_decode($value, true) ?? [];

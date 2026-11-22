@@ -8,19 +8,28 @@ use Illuminate\Support\Facades\Route;
 | Web Routes
 |--------------------------------------------------------------------------
 |
-| 精简版：已移除用户前台面板，仅保留管理后台入口与订阅地址。
+| Here is where you can register web routes for your application. These
+| routes are loaded by the RouteServiceProvider within a group which
+| contains the "web" middleware group. Now create something great!
 |
 */
 
-// 用户前台已移除，根路径不再提供任何页面
+
+// 用户前台面板已移除：根路径不再渲染主题页面
 Route::get('/', function () {
     abort(404);
 });
 
+//TODO:: 兼容
 Route::get('/' . admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))), function () {
     return view('admin', [
         'title' => admin_setting('app_name', 'XBoard'),
+        'theme_sidebar' => admin_setting('frontend_theme_sidebar', 'light'),
+        'theme_header' => admin_setting('frontend_theme_header', 'dark'),
+        'theme_color' => admin_setting('frontend_theme_color', 'default'),
+        'background_url' => admin_setting('frontend_background_url'),
         'version' => app(UpdateService::class)->getCurrentVersion(),
+        'logo' => admin_setting('logo'),
         'secure_path' => admin_setting('secure_path', admin_setting('frontend_admin_path', hash('crc32b', config('app.key'))))
     ]);
 });

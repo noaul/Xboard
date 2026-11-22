@@ -18,6 +18,7 @@ services:
       - ./.env:/www/.env
       - ./.docker/.data/:/www/.docker/.data
       - ./storage/logs:/www/storage/logs
+      - ./storage/theme:/www/storage/theme
       - ./plugins:/www/plugins
       - redis-data:/data
     environment:
